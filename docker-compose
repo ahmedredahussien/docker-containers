@@ -1,0 +1,234 @@
+version: '2'
+
+services:
+  spark:
+    image: docker.io/bitnami/spark:3.3
+    environment:
+      - SPARK_MODE=master
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+    ports:
+      - '8080:8080'
+  spark-worker:
+    image: docker.io/bitnami/spark:3.3
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark:7077
+      - SPARK_WORKER_MEMORY=1G
+      - SPARK_WORKER_CORES=1
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+
+  jupyter-base-notebook:
+    image: docker.io/bitnami/jupyter-base-notebook:2
+    command: ["tail", "-f", "/dev/null"]
+    ports:
+      - 8888:8888
+
+  mongodb:
+    image: docker.io/bitnami/mongodb:5.0
+    environment:
+      - ALLOW_EMPTY_PASSWORD=yes
+  express:
+    image: docker.io/bitnami/express:4
+    ports:
+      - '3000:3000'
+    environment:
+      - PORT=3000
+      - NODE_ENV=development
+      - DATABASE_URL=mongodb://mongodb:27017/myapp
+      - EXPRESS_SKIP_DB_WAIT=0
+      - EXPRESS_SKIP_DB_MIGRATION=0
+      - EXPRESS_SKIP_NPM_INSTALL=0
+      - EXPRESS_SKIP_BOWER_INSTALL=0
+    volumes:
+      - './my-project:/app'
+    depends_on:
+      - mongodb
+
+  postgresql:
+    image: docker.io/bitnami/postgresql:10
+    volumes:
+      - 'postgresql_data:/bitnami/postgresql'
+    environment:
+      - POSTGRESQL_DATABASE=bitnami_airflow
+      - POSTGRESQL_USERNAME=bn_airflow
+      - POSTGRESQL_PASSWORD=bitnami1
+      # ALLOW_EMPTY_PASSWORD is recommended only for development.
+      - ALLOW_EMPTY_PASSWORD=yes
+  redis:
+    image: docker.io/bitnami/redis:7.0
+    volumes:
+      - 'redis_data:/bitnami'
+    environment:
+      # ALLOW_EMPTY_PASSWORD is recommended only for development.
+      - ALLOW_EMPTY_PASSWORD=yes
+  airflow-scheduler:
+    image: docker.io/bitnami/airflow-scheduler:2
+    environment:
+      - AIRFLOW_DATABASE_NAME=bitnami_airflow
+      - AIRFLOW_DATABASE_USERNAME=bn_airflow
+      - AIRFLOW_DATABASE_PASSWORD=bitnami1
+      - AIRFLOW_EXECUTOR=CeleryExecutor
+      - AIRFLOW_WEBSERVER_HOST=airflow
+  airflow-worker:
+    image: docker.io/bitnami/airflow-worker:2
+    environment:
+      - AIRFLOW_DATABASE_NAME=bitnami_airflow
+      - AIRFLOW_DATABASE_USERNAME=bn_airflow
+      - AIRFLOW_DATABASE_PASSWORD=bitnami1
+      - AIRFLOW_EXECUTOR=CeleryExecutor
+      - AIRFLOW_WEBSERVER_HOST=airflow
+  airflow:
+    image: docker.io/bitnami/airflow:2
+    environment:
+      - AIRFLOW_DATABASE_NAME=bitnami_airflow
+      - AIRFLOW_DATABASE_USERNAME=bn_airflow
+      - AIRFLOW_DATABASE_PASSWORD=bitnami1
+      - AIRFLOW_EXECUTOR=CeleryExecutor
+    ports:
+      - '8081:8080'
+
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop2.7.4-java8
+    volumes:
+      - namenode:/hadoop/dfs/name
+    environment:
+      - CLUSTER_NAME=test
+    env_file:
+      - ./hadoop-hive.env
+    ports:
+      - "50070:50070"
+  datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop2.7.4-java8
+    volumes:
+      - datanode:/hadoop/dfs/data
+    env_file:
+      - ./hadoop-hive.env
+    environment:
+      SERVICE_PRECONDITION: "namenode:50070"
+    ports:
+      - "50075:50075"
+  hive-server:
+    image: bde2020/hive:2.3.2-postgresql-metastore
+    env_file:
+      - ./hadoop-hive.env
+    environment:
+      HIVE_CORE_CONF_javax_jdo_option_ConnectionURL: "jdbc:postgresql://hive-metastore/metastore"
+      SERVICE_PRECONDITION: "hive-metastore:9083"
+    ports:
+      - "10000:10000"
+  hive-metastore:
+    image: bde2020/hive:2.3.2-postgresql-metastore
+    env_file:
+      - ./hadoop-hive.env
+    command: /opt/hive/bin/hive --service metastore
+    environment:
+      SERVICE_PRECONDITION: "namenode:50070 datanode:50075 hive-metastore-postgresql:5432"
+    ports:
+      - "9083:9083"
+  hive-metastore-postgresql:
+    image: bde2020/hive-metastore-postgresql:2.3.0
+  presto-coordinator:
+    image: shawnzhu/prestodb:0.181
+    ports:
+      - "8082:8080"
+
+
+  arangodb:
+    image: arangodb:${ARANGO_DB_VERSION}
+    restart: on-failure
+    ports:
+      - ${ARANGO_DB_PORT}:8529
+    network_mode: "bridge"
+    environment:
+      ARANGO_NO_AUTH: 1
+
+  spline:
+    image: absaoss/spline-rest-server:${SPLINE_CORE_VERSION}
+    restart: on-failure
+    ports:
+      - ${SPLINE_REST_PORT}:8080
+    network_mode: "bridge"
+    command: >
+      bash -c "
+        until curl --output /dev/null --silent --get --fail http://172.17.0.1:${ARANGO_DB_PORT}/_db/spline/_admin/server/availability
+        do
+          echo waiting for 'spline' database to be ready
+          sleep 5
+        done
+        catalina.sh run
+      "
+    environment:
+      SPLINE_DATABASE_CONNECTION_URL: 'arangodb://172.17.0.1:${ARANGO_DB_PORT}/spline'
+      # by default /dev/random is used which may block
+      CATALINA_OPTS: "-Dsecurerandom.source=file:/dev/./urandom -Djava.security.egd=file:/dev/./urandom"
+    links:
+      - arangodb
+
+  spline-init-db:
+    image: absaoss/spline-admin:${SPLINE_CORE_VERSION}
+    restart: on-failure
+    network_mode: "bridge"
+    entrypoint: >
+      tini -g -- bash -c "
+        until curl --output /dev/null --silent --get --fail http://172.17.0.1:${ARANGO_DB_PORT}/_admin/server/availability
+        do
+          echo waiting for ArangoDB server to be ready
+          sleep 5
+        done
+        bash ./entrypoint.sh db-init arangodb://172.17.0.1:${ARANGO_DB_PORT}/spline -s
+      "
+    links:
+      - arangodb
+
+  agent:
+    image: absaoss/spline-spark-agent:${SPLINE_AGENT_VERSION}
+    network_mode: "bridge"
+    command: >
+      bash -c "
+        if [ ! -z "$SEED" ]
+        then
+          until curl --output /dev/null --silent --get --fail http://172.17.0.1:${SPLINE_REST_PORT}
+          do
+            echo waiting for spline
+            sleep 5
+          done
+          mvn test -P examples \
+            -D spline.producer.url=$${SPLINE_PRODUCER_URL} \
+            -D spline.mode=$${SPLINE_MODE} \
+            -D http.proxyHost=$${HTTP_PROXY_HOST} \
+            -D http.proxyPort=$${HTTP_PROXY_PORT} \
+            -D http.nonProxyHosts=$${HTTP_NON_PROXY_HOSTS}
+        fi
+      "
+    environment:
+      SEED: ${SEED} # Controls if the agent examples should run on startup up
+      SPLINE_PRODUCER_URL: 'http://172.17.0.1:${SPLINE_REST_PORT}/producer'
+    links:
+      - spline
+
+  ui:
+    image: absaoss/spline-web-ui:${SPLINE_UI_VERSION}
+    restart: on-failure
+    environment:
+      # The consumer URL is used by the web browser
+      SPLINE_CONSUMER_URL: 'http://${DOCKER_HOST_EXTERNAL:-localhost}:${SPLINE_REST_PORT}/consumer'
+      # by default /dev/random is used which may block
+      CATALINA_OPTS: "-Dsecurerandom.source=file:/dev/./urandom -Djava.security.egd=file:/dev/./urandom"
+    ports:
+      - ${SPLINE_UI_PORT}:8080
+    links:
+      - spline
+
+volumes:
+  postgresql_data:
+    driver: local
+  redis_data:
+    driver: local
+  namenode:
+  datanode:
